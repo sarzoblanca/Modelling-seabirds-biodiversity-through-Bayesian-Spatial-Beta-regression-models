@@ -1,0 +1,200 @@
+###############
+## Libraries
+###############
+library(RColorBrewer)
+library(ggplot2)
+library(maptools)
+library(prettymapr) #to decorate maps
+library(maps)
+library(viridis)
+library(shp2graph)
+library(ggmap)
+library(raster)
+library(rgdal)
+library(PerformanceAnalytics)
+require(sp)
+library(geoR)
+library(spdep)
+library(fields)
+library(colorspace)
+library(ggplot2)
+library(grid)
+library(rworldmap)
+library(sp)
+
+#############################
+## MEDITERRANEAN BOUNDARIES
+#############################
+
+worldMap <- getMap(resolution = "low")
+
+## To know the names
+temp_map = getMap(resolution='coarse')
+temp_map@data
+levels(temp_map@data[['NAME']])
+
+## WRITE DOWN THE NAMES YOU WANT TO APPEAR IN THE MAP
+europeanUnion <- c("Austria","Belgium","Bulgaria","Croatia","Cyprus",
+                   "Czech Rep.","Denmark","Estonia","France",
+                   "Germany","Greece","Hungary","Ireland","Italy","Latvia",
+                   "Lithuania","Luxembourg","Malta","Netherlands","Poland",
+                   "Portugal","Romania","Slovakia","Slovenia","Spain",
+                   "United Kingdom", "Algeria", "Morocco", "Tunisia",
+                   "Libya", "Egypt", "Turkey", "Arabia Saudi",
+                   "Jordan", "Israel",
+                   "Lebanon", "Syria", "Switzerland", 
+                   "Bosnia and Herz.", "Serbia",
+                   "Albania", "Macedonia", "Andorra", "Montenegro",
+                   "Kosovo", "Moldova",
+                   "Ukraine", "Russia", "Saudi Arabia", "Iraq")
+
+indEU <- which(worldMap$NAME%in%europeanUnion)
+map_med <- worldMap[indEU,]
+
+## Zoom in the map
+ext <- extent(-10,40,30,47)
+
+map_med2 <- raster::crop(map_med, ext)
+plot(map_med2)
+
+##############################
+## READING MARINE IBAs
+##############################
+IBAS_mar <- readOGR(dsn = "~/Blanca/Mediterranean_IBA/", layer = "IBAS_mar")
+
+r1 <- raster()
+extent(r1) <- extent(map_med2) + 1 # add 1 degree of extent (0.5 each side)
+IBAS_mar_raster <- rasterize(IBAS_mar, r1, 1)
+
+##############################
+## READING MARINE MPAs
+##############################
+mpa_med <- readOGR(dsn= "~/Blanca/Shapes_MPAs/" , 
+                   layer="mpa_med",
+                   verbose = T)
+
+r1 <- raster()
+extent(r1) <- extent(map_med2) + 1 # add 1 degree of extent (0.5 each side)
+mpa_med_raster <- rasterize(mpa_med, r1, 1)
+
+##############################
+## OUR POSTERIOR MEAN
+##############################
+pred_mean <- readOGR(dsn = "~/Blanca/", 
+                     layer = "pred_mean")
+
+#############################
+## 1. PREDICTIVE MEAN >0.50
+#############################
+pred_mean[which(pred_mean$PREDmean > 0.5), "PREDmean"] <- 1
+pred_mean[which(pred_mean$PREDmean <= 0.5), "PREDmean"] <- 0
+
+## TRANSFORM TO RASTER
+r <- raster()
+extent(r) <- extent(map_med2) + 1 # add 1 degree of extent (0.5 each side)
+pred_raster <- rasterize(pred_mean, r, pred_mean$PREDmean)
+
+#####################
+## INTERSECTIONS
+#####################
+## 1. MARINE IBAs
+#####################
+ibas_pred <- mask(pred_raster, IBAS_mar)
+absibas <- values(ibas_pred) %>% table()
+absibas/sum(absibas)*100
+
+#####################
+## 2. MPAs
+#####################
+mpa_pred <- mask(pred_raster, mpa_med)
+absmpas <- values(mpa_pred) %>% table()
+absmpas/sum(absmpas)*100
+
+#####################
+## 3. NO OVERLAP
+#####################
+IBAS_vs_MPAS <- merge(IBAS_mar_raster, mpa_med_raster)
+
+IBAS_vs_MPAS_AUX <- IBAS_vs_MPAS
+IBAS_vs_MPAS_AUX[which(values(IBAS_vs_MPAS_AUX) == 1)] <- 3
+pred_noIBAS_vs_MPAS <- merge(IBAS_vs_MPAS_AUX, pred_raster)
+pred_noIBAS_vs_MPAS[which(values(pred_noIBAS_vs_MPAS) == 3)] <- NA
+pred_noIBAS_vs_MPAS[which(values(pred_noIBAS_vs_MPAS) == 0)] <- NA
+
+#############################
+## 2. PREDICTIVE MEAN >0.75
+#############################
+pred_mean[which(pred_mean$PREDmean > 0.75), "PREDmean"] <- 1
+pred_mean[which(pred_mean$PREDmean <= 0.75), "PREDmean"] <- 0
+
+## TRANSFORM TO RASTER
+r <- raster()
+extent(r) <- extent(map_med2) + 1 # add 1 degree of extent (0.5 each side)
+pred_raster <- rasterize(pred_mean, r, pred_mean$PREDmean)
+
+#####################
+## INTERSECTIONS
+#####################
+## 1. MARINE IBAs
+#####################
+ibas_pred <- mask(pred_raster, IBAS_mar)
+absibas <- values(ibas_pred) %>% table()
+absibas/sum(absibas)*100
+
+#####################
+## 2. MPAs
+#####################
+mpa_pred <- mask(pred_raster, mpa_med)
+absmpas <- values(mpa_pred) %>% table()
+absmpas/sum(absmpas)*100
+
+#####################
+## 3. NO OVERLAP
+#####################
+IBAS_vs_MPAS <- merge(IBAS_mar_raster, mpa_med_raster)
+
+IBAS_vs_MPAS_AUX <- IBAS_vs_MPAS
+IBAS_vs_MPAS_AUX[which(values(IBAS_vs_MPAS_AUX) == 1)] <- 3
+pred_noIBAS_vs_MPAS <- merge(IBAS_vs_MPAS_AUX, pred_raster)
+pred_noIBAS_vs_MPAS[which(values(pred_noIBAS_vs_MPAS) == 3)] <- NA
+pred_noIBAS_vs_MPAS[which(values(pred_noIBAS_vs_MPAS) == 0)] <- NA
+
+########################
+## PLOT THE NO OVERLAP
+########################
+## Transform raster to Spatial polygons
+NO_over <- rasterToPolygons(pred_noIBAS_vs_MPAS, fun=NULL, n=4, na.rm=TRUE, digits=12, dissolve=FALSE)
+proj4string(NO_over) <- proj4string(map_med2)
+
+png("NO.overlap50.png", width = 1000, height = 1000)
+ggplot() +
+        geom_polygon(data = map_med2, aes(x = long, y = lat, group = group),fill = "gray95", color = "gray20", size = 0.25) +
+        geom_polygon(data = NO_over, aes(x = long, y = lat, group = group),fill = "cyan", color = "cyan", size = 0.15)  +
+        # geom_point(data = data.frame(pred), aes(x = lon, y = lat),fill = "cyan", color = "cyan", size = 0.01) +
+        # geom_polygon(data = mpas, aes(x = long, y = lat, group = group),fill = "white", color = "red", size = 0.25, alpha=0)  +
+        coord_equal(ratio = 1) +
+        xlab("Longitude")+ylab("Latitude") +
+        theme_linedraw() +
+        theme(
+                # line = element_line(),
+                axis.text = element_text(size=16),
+                axis.title=element_text(size=16),
+                # line= element_blank(), # remove axis lines ..
+                # axis.text = element_blank(),
+                # .. tickmarks..
+                # axis.title = element_blank(),
+                panel.background = element_blank(),
+                legend.position = "bottom",
+                legend.key.height = unit(0.5, "cm"),
+                legend.key.width = unit(4, "cm"),
+                legend.title = element_blank(),
+                legend.text = element_text(size = 16))
+# plot.title = element_text(size = 17, hjust = 0.5, face="bold"))
+
+dev.off()
+
+
+
+
+
+
