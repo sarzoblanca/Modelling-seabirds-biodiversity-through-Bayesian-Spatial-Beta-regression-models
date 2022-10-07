@@ -1,0 +1,247 @@
+###############
+## Libraries
+###############
+library(raster)
+library(rgeos)
+library(sf)
+library(rgdal)
+library(PerformanceAnalytics)
+require(sp)
+library(geoR) 
+library(spdep)
+library(fields)
+library(ggplot2)
+library(maptools)
+library(rgeos)
+library(RColorBrewer)
+# install.packages("INLA",repos=c(getOption("repos"),INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE)
+library('INLA')
+library(prettymapr) #to decorate maps
+library(maps)
+library(viridis)
+library(shp2graph)
+library(igraph)
+library(sdmpredictors)
+library(leaflet)
+## To plot rasters in ggplot2
+library(rasterVis)
+library(car)
+# sudo apt-get install r-cran-car
+library(DirichletReg)
+library(Matrix)
+
+###################
+## MODELS
+###################
+## WORK DATABASE
+
+load("seabirds_def.RData")
+seabirds1 <- seabirds_def
+
+### Variable selection
+## First we need to remove NA values
+## Seabirds has not NAs
+
+library(subselect)
+
+## First remove the NAs
+pos.na1 <- which(is.na(seabirds1$ais)) 
+pos.na2 <- which(is.na(seabirds1$sss)) 
+pos.na3 <- which(is.na(seabirds1$climate_changes)) 
+pos.na4 <- which(is.na(seabirds1$aspE)) 
+
+seabirds <- seabirds1[-c(pos.na1,pos.na2,pos.na3,pos.na4),]
+
+##########################
+## Correlation analysis
+##########################
+## 1. SCENARIO 1: Without coercing covariates
+###############################################
+cov <- seabirds[,c(4:20)]
+results <- anneal(cor(cov),kmin=1, kmax=ncol(cov)-1, nsol=4, niter=10, setseed=TRUE)
+
+names(cov[,results$bestsets[7,]])
+names(cov[,results$bestsets[8,]]) 
+names(cov[,results$bestsets[9,]])
+names(cov[,results$bestsets[10,]])
+
+## 2. SCENARIO 2: COERCING 3 COVARIATES
+##########################################
+cov <- seabirds[,c(4:20)]
+results <- anneal(cor(cov), kmin=4, kmax=ncol(cov)-1, nsol=4, include = c(1,4,9))
+
+names(cov[,results$bestsets[5,]]) 
+
+############################################
+## MODEL 1: WITHOUT COERCING
+############################################
+##################################
+### Database 1 (without forcing)
+##################################
+seabirds <- seabirds_def
+variables_sc1 <- c("sst","bathy","aspE","aspN", "curv","rugosity","costal_impact","ais")
+
+data1 <- seabirds %>% dplyr::select(one_of("lon", "lat", "sp_index",variables_sc1 ))
+
+## Coordinates
+coords <- as.matrix(data1[,1:2]) 
+
+## Seabirds Lim: 30Km 
+grid_vec <- dnearneigh(coords, d1=0, d2=0.3) 
+
+#### Create the graph 
+nb2INLA("grid_grafo.graph", grid_vec)
+grid_grafo <- inla.read.graph("grid_grafo.graph")
+
+### Create a data.frame with two columns
+## One for the structured effects (S), 
+## and other for the independent effect (U).
+## grid_def: index to distinguish individuals
+data1b <- cbind(data1, U=c(1:dim(data1)[1]), S=c(1:dim(data1)[1]))
+
+## DR_data: function (dirichlet package) which compresses data
+## Working with beta distribution if we have close values to 0 or 1 we can have problems
+y <- DR_data(data1b$sp_index)
+
+## We take second column (first is 1-sp.index)
+y <- y[,2]
+saveRDS(y, file="y.rds") 
+
+## New data.frame with the corrected response variable: y
+y <- readRDS(file="y.rds")
+data1c <- cbind(data1b, y) 
+
+## We include non informative PC priors
+prior1_tau <- list(prec = list(prior = 'pc.prec', param = c(5, 0.1)))
+
+## Precision of beta
+prior1_phi_fam <- list(phi = list(prior = 'pc.prec', param = c(5, 0.1)))
+
+##############################################
+## Model 1 Besag: without forcing covariates
+##############################################
+formula1 <- y ~ 1 + 
+  sst +
+  bathy + 
+  aspE +
+  aspN +
+  curv +
+  rugosity +
+  costal_impact +
+  ais +
+  f(S, model="besag", graph=grid_grafo, scale.model=TRUE, hyper=prior1_tau) 
+
+model_sc1_besag <- inla(formula1, 
+                     family          = "beta", 
+                     data            = data1c,
+                     control.compute = list(dic=TRUE,cpo=TRUE, waic=TRUE),
+                     control.family = list(link  = "logit"),
+                                          # ,
+                                          #  hyper=list(phi=prior1_phi_fam)),
+                     control.results = list(return.marginals.random=FALSE, 
+                                            return.marginals.predictor=FALSE),
+                     verbose         = FALSE, 
+                     num.threads     = 4)
+
+summary(model_sc1_besag)
+
+## LCPO, WAIC, DIC
+lcpo <- mean(log(model1$cpo$cpo)) 
+waic <- model1$waic$waic 
+dic <- model1$dic$dic 
+
+######################################
+## MODEL 2: COERCING 3 COVARIATES
+#######################################
+### Database 3 (forcing 3 covariates)
+#######################################
+seabirds <- seabirds1
+variables_sc3 <- c("chl_log","sst","aspE","dist", "slope","concavity", "costal_impact", "marine_activities")
+
+data3 <- seabirds %>% dplyr::select(one_of("lon", "lat", "sp_index",variables_sc3))
+
+## Coordinates
+coords <- as.matrix(data3[,1:2]) 
+
+## Lim: 30Km 
+grid_vec <- dnearneigh(coords, d1=0, d2=0.3) 
+
+#### Create the graph 
+nb2INLA("grid_grafo.graph", grid_vec)
+grid_grafo <- inla.read.graph("grid_grafo.graph")
+
+### Create a data.frame with two columns
+## One for the structured effects (S), 
+## and other for the independent effect (U).
+## grid_def: index to distinguish individuals
+data3b <- cbind(data3, U=c(1:dim(data3)[1]), S=c(1:dim(data3)[1]))
+
+## DR_data: function (dirichlet package) which compresses data
+## Working with beta distribution if we have close values to 0 or 1 we can have pronblems
+y <- DR_data(data3b$sp_index)
+
+## We take second column (first is 1-sp.index)
+y <- y[,2]
+
+## New data.frame with the corrected response variable: y
+data3c <- cbind(data3b, y) 
+
+## We include non informative PC priors
+prior1_tau <- list(prec = list(prior = 'pc.prec', param = c(5, 0.1)))
+
+## Precision of beta
+prior1_phi_fam <- list(phi = list(prior = 'pc.prec', param = c(5, 0.1)))
+
+##############################################
+## Model 3 Besag: forcing 3 covariates
+##############################################
+INLA:::inla.dynload.workaround()
+
+formula3 <- y ~ 1 + 
+  chl_ss +
+  sst +
+  aspE +
+  dist +
+  slope +
+  concavity +
+  costal_impact +
+  marine_activities +
+  f(S, model="besag", graph=grid_grafo, scale.model=TRUE, hyper=prior1_tau) 
+
+model_sc3_besag <- inla(formula3, 
+                        family          = "beta", 
+                        data            = data3c,
+                        control.compute = list(dic=TRUE,cpo=TRUE, waic=TRUE),
+                        control.family = list(link  = "logit"),
+                                              # ,
+                                              # hyper=list(phi=prior1_phi_fam)),
+                        # control.results = list(return.marginals.random=FALSE,
+                        # return.marginals.predictor=FALSE),
+                        verbose         = F, 
+                        num.threads     = 4)
+
+## LCPO, WAIC, DIC
+lcpo <- mean(log(model_sc3_besag$cpo$cpo)) 
+waic <- model_sc3_besag$waic$waic 
+dic <- model_sc3_besag$dic$dic 
+
+###################################
+## RELEVANT VARIABLES (MODEL 2)
+###################################
+## Relevant Variables 
+## P(parameter > 0)
+1-inla.pmarginal(0, model_sc3_besag$marginals.fixed$chl_ss) 
+1-inla.pmarginal(0, model_sc3_besag$marginals.fixed$sst) 
+1-inla.pmarginal(0, model_sc3_besag$marginals.fixed$marine_activities)
+1-inla.pmarginal(0, model_sc3_besag$marginals.fixed$aspE) 
+1-inla.pmarginal(0, model_sc3_besag$marginals.fixed$dist) 
+1-inla.pmarginal(0, model_sc3_besag$marginals.fixed$slope) 
+1-inla.pmarginal(0, model_sc3_besag$marginals.fixed$concavity) 
+1-inla.pmarginal(0, model_sc3_besag$marginals.fixed$costal_impact) 
+
+
+
+
+
+
+
